@@ -2,3 +2,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 data/tasks_*.json
+roteiro_apresentacao.txt
+guia_comentado.txt
+roteiro_apresentacao.txt

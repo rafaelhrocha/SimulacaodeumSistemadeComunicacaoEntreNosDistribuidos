@@ -13,7 +13,7 @@ for ($i = 1; $i -le $Nodes; $i++) {
   for ($j = 1; $j -le $Nodes; $j++) {
     if ($j -eq $i) { continue }
     $peerPort = $BasePort + $j - 1
-    $peerList += "127.0.0.1:$peerPort:$j"
+    $peerList += "127.0.0.1:$($peerPort):$j"
   }
   $peers = ($peerList -join ",")
   $cmd = "python -m src.node.main --id $i --port $port --peers $peers"

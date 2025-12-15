@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from typing import Callable, Iterable, Optional, Set
+import logging
 
 from src.common.messages import Envelope, MessageType
+from src.common.logger import log_structured
 
 SendFunc = Callable[[str, int, Envelope], asyncio.Future]
 
@@ -19,6 +21,7 @@ class RicartAgrawalaMutex:
         next_ts: Callable[[], int],
         peer_by_id: Callable[[int], Optional[object]],
         election_timeout: float = 2.0,
+        logger: Optional[logging.Logger] = None,
     ) -> None:
         self.node_id = node_id
         self.peers = peers
@@ -30,6 +33,7 @@ class RicartAgrawalaMutex:
         self._replies: Set[int] = set()
         self._deferred: Set[int] = set()
         self._timeout = election_timeout
+        self._logger = logger
 
     async def enter(self, peers_alive: Iterable[int]) -> None:
         async with self._lock:
@@ -46,6 +50,15 @@ class RicartAgrawalaMutex:
                     payload={"ts": self._request_ts},
                 )
                 await self._send(peer.host, peer.port, msg)
+            if targets:
+                log_structured(
+                    self._logger,
+                    "warning",
+                    "mutex_request",
+                    node=self.node_id,
+                    ts=self._request_ts,
+                    targets=[p.id for p in targets],
+                )
             if targets:
                 try:
                     await asyncio.wait_for(self._wait_replies(len(targets)), timeout=self._timeout)
@@ -66,11 +79,14 @@ class RicartAgrawalaMutex:
         should_reply = (self._request_ts is None) or ((their_ts, envelope.source) < (self_ts, self.node_id))
         if should_reply:
             await self._send_reply(envelope.source)
+            log_structured(self._logger, "warning", "mutex_reply", node=self.node_id, to=envelope.source, their_ts=their_ts, self_ts=self_ts)
         else:
             self._deferred.add(envelope.source)
+            log_structured(self._logger, "info", "mutex_deferred", node=self.node_id, deferred=envelope.source, their_ts=their_ts, self_ts=self_ts)
 
     def on_reply(self, envelope: Envelope) -> None:
         self._replies.add(envelope.source)
+        log_structured(self._logger, "info", "mutex_reply_received", node=self.node_id, from_node=envelope.source, received=len(self._replies))
 
     async def on_release(self, envelope: Envelope) -> None:
         if envelope.source in self._deferred:
@@ -89,6 +105,7 @@ class RicartAgrawalaMutex:
             payload={},
         )
         await self._send(peer.host, peer.port, msg)
+        log_structured(self._logger, "warning", "mutex_reply_sent", node=self.node_id, to=target_id)
 
     async def _broadcast(self, msg_type: MessageType, payload: dict) -> None:
         for peer in self.peers:

@@ -38,22 +38,25 @@ async def send_to_any(peers: List[Tuple[str, int]], payload: bytes) -> None:
 
 async def run(node_id: int, peers: List[Tuple[str, int]], timeout: float = 5.0) -> None:
     clock = LamportClock()
-    server = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
-    reply_host, reply_port = server.sockets[0].getsockname()
+    task_future: asyncio.Future[Optional[Envelope]] = asyncio.get_running_loop().create_future()
 
-    async def wait_task() -> Optional[Envelope]:
-        async with server:
-            conn = await asyncio.wait_for(server.accept(), timeout=timeout)
-            reader, writer = conn
+    async def _on_conn(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        try:
             raw = await asyncio.wait_for(reader.readline(), timeout=timeout)
+            if raw and not task_future.done():
+                data = json.loads(raw.decode())
+                env = Envelope.model_validate(data)
+                clock.update(env.lamport_ts)
+                task_future.set_result(env)
+        except Exception:
+            if not task_future.done():
+                task_future.set_result(None)
+        finally:
             writer.close()
             await writer.wait_closed()
-            if not raw:
-                return None
-            data = json.loads(raw.decode())
-            env = Envelope.model_validate(data)
-            clock.update(env.lamport_ts)
-            return env
+
+    server = await asyncio.start_server(_on_conn, "127.0.0.1", 0)
+    reply_host, reply_port = server.sockets[0].getsockname()
 
     req = Envelope(
         type=MessageType.DEQUEUE,
@@ -65,7 +68,8 @@ async def run(node_id: int, peers: List[Tuple[str, int]], timeout: float = 5.0) 
     await send_to_any(peers, req.model_dump_json().encode() + b"\n")
 
     try:
-        task_env = await wait_task()
+        async with server:
+            task_env = await asyncio.wait_for(task_future, timeout=timeout)
     except asyncio.TimeoutError:
         print("Nenhuma tarefa recebida (timeout).")
         return

@@ -32,6 +32,8 @@ class Node:
             next_ts=self.state.next_ts,
             peer_by_id=self._peer_by_id,
             election_timeout=config.election_timeout,
+            logger=self.logger,
+            is_peer_alive=lambda pid: self.state.peers_alive.get(pid, True),
         )
         self.mutex = RicartAgrawalaMutex(
             node_id=config.id,
@@ -40,6 +42,7 @@ class Node:
             next_ts=self.state.next_ts,
             peer_by_id=self._peer_by_id,
             election_timeout=config.election_timeout,
+            logger=self.logger,
         )
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._monitor_task: Optional[asyncio.Task] = None
@@ -450,6 +453,28 @@ class Node:
             await self.transport.send(host, port, msg)
         except Exception as exc:
             log_structured(self.logger, "warning", "send_failed", node=self.config.id, host=host, port=port, error=str(exc))
+            failed_peer = None
+            for p in self.config.peers:
+                if p.host == host and p.port == port:
+                    failed_peer = p
+                    break
+            if failed_peer:
+                self.state.peers_alive[failed_peer.id] = False
+            leader_id = self.state.leader_id
+            leader_peer = self._peer_by_id(leader_id) if leader_id else None
+            failed_leader = False
+            if leader_peer and leader_peer.host == host and leader_peer.port == port:
+                failed_leader = True
+            if msg.target == leader_id:
+                failed_leader = True
+            if (
+                self.state.role != Role.LEADER
+                and leader_id is not None
+                and failed_leader
+                and not self.bully.in_progress
+            ):
+                self.state.peers_alive[leader_id] = False
+                asyncio.create_task(self.bully.start())
 
     def _persist_tasks(self) -> None:
         self._storage_file.parent.mkdir(parents=True, exist_ok=True)

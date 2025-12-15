@@ -38,22 +38,25 @@ async def send_to_any(peers: List[Tuple[str, int]], payload: bytes) -> None:
 
 async def run(node_id: int, peers: List[Tuple[str, int]], payload: str, timeout: float = 3.0) -> None:
     clock = LamportClock()
-    server = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
-    reply_host, reply_port = server.sockets[0].getsockname()
+    ack_future: asyncio.Future[Optional[str]] = asyncio.get_running_loop().create_future()
 
-    async def wait_ack() -> Optional[str]:
-        async with server:
-            conn = await asyncio.wait_for(server.accept(), timeout=timeout)
-            reader, writer = conn
+    async def _on_conn(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        try:
             raw = await asyncio.wait_for(reader.readline(), timeout=timeout)
+            if raw and not ack_future.done():
+                data = json.loads(raw.decode())
+                env = Envelope.model_validate(data)
+                clock.update(env.lamport_ts)
+                ack_future.set_result(env.payload.get("task_id"))
+        except Exception:
+            if not ack_future.done():
+                ack_future.set_result(None)
+        finally:
             writer.close()
             await writer.wait_closed()
-            if not raw:
-                return None
-            data = json.loads(raw.decode())
-            env = Envelope.model_validate(data)
-            clock.update(env.lamport_ts)
-            return env.payload.get("task_id")
+
+    server = await asyncio.start_server(_on_conn, "127.0.0.1", 0)
+    reply_host, reply_port = server.sockets[0].getsockname()
 
     env = Envelope(
         type=MessageType.ENQUEUE,
@@ -65,10 +68,14 @@ async def run(node_id: int, peers: List[Tuple[str, int]], payload: str, timeout:
     await send_to_any(peers, env.model_dump_json().encode() + b"\n")
 
     try:
-        task_id = await wait_ack()
-        print(f"ACK recebido. task_id={task_id} (Lamport={clock.value})")
+        async with server:
+            task_id = await asyncio.wait_for(ack_future, timeout=timeout)
+            if task_id is not None:
+                print(f"ACK recebido. task_id={task_id} (Lamport={clock.value})")
+            else:
+                print("ACK vazio ou invalido.")
     except asyncio.TimeoutError:
-        print("ACK nлo recebido (timeout)")
+        print("ACK nao recebido (timeout)")
 
 
 def main() -> None:

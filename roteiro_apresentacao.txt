@@ -17,14 +17,36 @@ Roteiro Apresentacao (uso pessoal)
   - tests/integration/test_distributed_system.py: eleicao + replicacao 2PC + quorum; sync de follower que retorna; reentrega sem ACK.
   - tests/unit/test_lamport_clock.py, tests/unit/test_algorithms.py, tests/unit/test_node_state.py cobrem componentes de base.
 - Benchmark: python scripts/bench.py --messages 60 --concurrency 15 gera throughput/latencia; numeros atuais no README.md (14 msg/s ~0.9s avg no cenario 60x15).
-- Demonstracao passo a passo (fazer ao vivo):
-  1) Subir cluster: .\run-local.ps1 -Nodes 3 (mostre portas/IDs nos logs Rich). Se bloquear: Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass.
+
+Preparacao rapida
+- Opcional limpar estado: Remove-Item data\tasks_*.json -Force
+- Se PowerShell bloquear: Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+- Ver PIDs dos nos: Get-NetTCPConnection -LocalPort 8000,8001,8002 | Select LocalPort,OwningProcess
+
+Demonstracao passo a passo (fazer ao vivo)
+  1) Subir cluster: .\run-local.ps1 -Nodes 3 (mostrar portas/IDs nos logs Rich).
   2) Enfileirar: python -m src.clients.enqueue_client --id 9000 --payload "hello world" (mostrar ACK).
   3) Consumir: python -m src.clients.worker_client --id 9001 (mostrar payload e ACK enviado).
+
+----- MENSAGENS ----
+
   4) Falha de lider: derrubar processo com maior ID; aguardar Bully (logs LEADER_ANNOUNCE/leader_timeout) e repetir enqueue/dequeue.
-  5) Persistencia/recuperacao: Ctrl+C nos 3 nos, abrir data/tasks_<id>.json e mostrar tarefa com ack. Subir de novo (.\run-local.ps1 -Nodes 3) e apontar o log tasks_recovered.
-  6) Reentrega sem ACK: rodar worker, matar antes do ACK (Ctrl+C). Esperar timeout e mostrar task_requeued no lider. Rodar worker de novo e mostrar mesma task entregue.
-  7) Follower retorna e sincroniza: parar (opcional limpar: Remove-Item data\tasks_*.json -Force). Subir 3 nos, derrubar seguidor (porta 8001). Fazer enqueue enquanto ele esta fora: python -m src.clients.enqueue_client --id 9000 --payload "fora-do-ar". Subir seguidor manual: python -m src.node.main --id 2 --host 127.0.0.1 --port 8001 --peers 127.0.0.1:8000:1,127.0.0.1:8002:3. Mostrar log SYNC_REQUEST/STATE ou data/tasks_2.json com a tarefa.
-  8) Opcional bench rapido: python scripts/bench.py --messages 10 --concurrency 3 (mostra throughput/latencia).
-  9) Opcional roteamento/mailbox: parar lider, enviar producer para follower: python -m src.clients.enqueue_client --id 9000 --host 127.0.0.1 --port 8001 --payload "via-follower". Subir lider e mostrar entrega/ACK (MAILBOX_DELIVER).
-- Slides/gancho de fala (ordem): problema -> arquitetura/algoritmos -> fluxo ENQUEUE->2PC->ACK -> tolerancia a falhas (eleicao, quorum, reentrega, sync) -> demonstracao -> resultados de benchmark -> limitacoes (pode perder commit se quorum cai no meio do 2PC; estado em JSON simples; sem autenticacao).
+      - Ver PID do lider (porta 8002): Get-NetTCPConnection -LocalPort 8002 | Select OwningProcess
+      - Matar lider: Stop-Process -Id <PID> -Force
+      - Subir no 3 manualmente: python -m src.node.main --id 3 --host 127.0.0.1 --port 8002 --peers 127.0.0.1:8000:1,127.0.0.1:8001:2
+      - Se WinError 52 persistir, usar IPs loopback distintos (ex: no1 127.0.0.2, no2 127.0.0.3, no3 127.0.0.4) e ajustar peers
+
+  5) Persistencia: parar nos, abrir data/tasks_<id>.json e mostrar tarefas/owners/acked. Subir novamente (.\run-local.ps1 -Nodes 3) e mostrar log tasks_recovered.
+  6) Reentrega: rodar dequeue mas nao enviar ACK (Ctrl+C antes do ACK); esperar timeout e mostrar requeue em logs. Rodar worker de novo e mostrar mesma task entregue.
+  7) Sincronismo fisico: comentar logs time_sync offset_ms=... em seguidores.
+  8) Roteamento/mailbox: iniciar produtor apontando para seguidor enquanto lider esta fora; mostrar entrega apos lider voltar (MAILBOX_DELIVER).
+  9) Ricart-Agrawala (mutex) no PowerShell: rodar produtores concorrentes
+      - janela 1: for ($i=1; $i -le 5; $i++) { python -m src.clients.enqueue_client --id 9100 --payload "p1-$i" }
+      - janela 2: for ($i=1; $i -le 5; $i++) { python -m src.clients.enqueue_client --id 9101 --payload "p2-$i" }
+      - observar no lider logs REQUEST_CS/REPLY_CS/RELEASE_CS
+
+Extras (opcional)
+- Bench rapido: python scripts/bench.py --messages 10 --concurrency 3 (mostra throughput/latencia).
+- Ver estado rapido: Get-Content data\tasks_1.json (trocar ID conforme no).
+
+Slides/gancho de fala (ordem): problema -> arquitetura/algoritmos -> fluxo ENQUEUE->2PC->ACK -> tolerancia a falhas (eleicao, quorum, reentrega, sync) -> demonstracao -> resultados de benchmark -> limitacoes (pode perder commit se quorum cai no meio do 2PC; estado em JSON simples; sem autenticacao).
